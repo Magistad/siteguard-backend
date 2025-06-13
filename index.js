@@ -1,10 +1,12 @@
 const express = require('express');
+const cors = require('cors');
 const puppeteer = require('puppeteer');
 const { PDFDocument } = require('pdf-lib');
 
 const app = express();
 const port = process.env.PORT || 3001;
 
+app.use(cors());
 app.use(express.json());
 
 app.post('/audit', async (req, res) => {
