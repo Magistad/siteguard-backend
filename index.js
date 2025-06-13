@@ -1,10 +1,10 @@
 const express = require('express');
 const cors = require('cors');
 const { PDFDocument } = require('pdf-lib');
-const chromium = require('chrome-aws-lambda');
+const { chromium } = require('playwright');
 
 const app = express();
-const port = process.env.PORT || 10000;
+const port = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
@@ -17,16 +17,9 @@ app.post('/audit', async (req, res) => {
   let browser = null;
 
   try {
-    browser = await chromium.puppeteer.launch({
-      args: chromium.args,
-      defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath || (() => { throw new Error('Chromium executable path not found'); })(),
-
-      headless: chromium.headless,
-    });
-
+    browser = await chromium.launch();
     const page = await browser.newPage();
-    await page.goto(url, { waitUntil: 'networkidle2' });
+    await page.goto(url, { waitUntil: 'networkidle' });
 
     const pdfBuffer = await page.pdf({ format: 'A4' });
     await browser.close();
@@ -47,11 +40,8 @@ app.post('/audit', async (req, res) => {
     res.send(Buffer.from(finalPdf));
   } catch (err) {
     console.error('Audit failed:', err);
+    if (browser) await browser.close();
     res.status(500).json({ error: 'Audit failed', details: err.message });
-  } finally {
-    if (browser !== null) {
-      await browser.close();
-    }
   }
 });
 
