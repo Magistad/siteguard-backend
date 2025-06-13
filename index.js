@@ -2,8 +2,9 @@ const express = require('express');
 const cors = require('cors');
 const { PDFDocument } = require('pdf-lib');
 const chromium = require('chrome-aws-lambda');
+
 const app = express();
-const port = process.env.PORT || 3001;
+const port = process.env.PORT || 10000;
 
 app.use(cors());
 app.use(express.json());
@@ -13,11 +14,13 @@ app.post('/audit', async (req, res) => {
 
   if (!url) return res.status(400).json({ error: 'Missing URL' });
 
+  let browser = null;
+
   try {
-    const browser = await chromium.puppeteer.launch({
+    browser = await chromium.puppeteer.launch({
       args: chromium.args,
       defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath,
+      executablePath: await chromium.executablePath || '/usr/bin/chromium-browser',
       headless: chromium.headless,
     });
 
@@ -42,8 +45,12 @@ app.post('/audit', async (req, res) => {
     res.setHeader('Content-Disposition', 'attachment; filename=audit-report.pdf');
     res.send(Buffer.from(finalPdf));
   } catch (err) {
-    console.error(err);
+    console.error('Audit failed:', err);
     res.status(500).json({ error: 'Audit failed', details: err.message });
+  } finally {
+    if (browser !== null) {
+      await browser.close();
+    }
   }
 });
 
