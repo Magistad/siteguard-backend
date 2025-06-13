@@ -20,7 +20,8 @@ app.post('/audit', async (req, res) => {
     browser = await chromium.puppeteer.launch({
       args: chromium.args,
       defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath || '/usr/bin/chromium-browser',
+      executablePath: await chromium.executablePath || (() => { throw new Error('Chromium executable path not found'); })(),
+
       headless: chromium.headless,
     });
 
