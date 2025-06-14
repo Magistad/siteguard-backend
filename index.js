@@ -1,6 +1,5 @@
 const express = require('express');
-const puppeteer = require('puppeteer-core');
-const path = require('path');
+const puppeteer = require('puppeteer'); // bundled Chromium
 const cors = require('cors');
 
 const app = express();
@@ -17,7 +16,6 @@ app.post('/generate-pdf', async (req, res) => {
     }
 
     const browser = await puppeteer.launch({
-      executablePath: '/usr/bin/google-chrome-stable', // Works on Render
       headless: 'new',
       args: ['--no-sandbox', '--disable-setuid-sandbox'],
     });
@@ -46,3 +44,4 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server is listening on port ${PORT}`);
 });
+
