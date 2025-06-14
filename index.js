@@ -1,5 +1,5 @@
 const express = require('express');
-const puppeteer = require('puppeteer'); // bundled Chromium
+const { chromium } = require('playwright');
 const cors = require('cors');
 
 const app = express();
@@ -15,13 +15,12 @@ app.post('/generate-pdf', async (req, res) => {
       return res.status(400).json({ error: 'Missing HTML content' });
     }
 
-    const browser = await puppeteer.launch({
-      headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    const browser = await chromium.launch({
+      headless: true,
     });
 
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'networkidle0' });
+    await page.setContent(html, { waitUntil: 'networkidle' });
 
     const pdfBuffer = await page.pdf({ format: 'A4' });
     await browser.close();
@@ -44,4 +43,3 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server is listening on port ${PORT}`);
 });
-
