@@ -11,10 +11,14 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "chrome-launcher": "^1.2.0",
     "cors": "^2.8.5",
     "express": "^5.1.0",
+    "lighthouse": "^12.6.1",
+    "node-fetch": "^3.3.2",
     "pdf-lib": "^1.17.1",
     "playwright": "^1.53.0",
-    "puppeteer": "^24.10.1"
+    "puppeteer": "^24.10.1",
+    "whois-json": "^2.0.4"
   }
 }
