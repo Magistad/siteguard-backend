@@ -9,6 +9,7 @@ const dns = require('dns');
 const urlModule = require('url');
 const fs = require('fs');
 const whois = require('whois-json');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -29,23 +30,85 @@ try {
   console.warn('AbuseIPDB API key not found. IP reputation checks will be skipped.');
 }
 
-app.use(cors());
-app.use(express.json());
+// --- Lockdown CORS: only allow your frontend in local and prod ---
+const allowedOrigins = [
+  'http://localhost:3000',
+  'https://siteguard.io'
+];
 
+app.use(cors({
+  origin: function(origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl)
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  }
+}));
+
+// -------- PDF Logo Helper --------
+function getLogoBase64() {
+  const logoPath = path.join(__dirname, 'siteguard-logo-pdf.png');
+  try {
+    const img = fs.readFileSync(logoPath);
+    return `data:image/png;base64,${img.toString('base64')}`;
+  } catch (e) {
+    return '';
+  }
+}
+
+// -------- Branded PDF endpoint --------
 app.post('/generate-pdf', async (req, res) => {
   try {
     const html = req.body.html;
     if (!html) {
       return res.status(400).json({ error: 'Missing HTML content' });
     }
+    const logo = getLogoBase64();
+    const brandedHtml = `
+      <html>
+      <head>
+        <title>SiteGuard Scan Report</title>
+        <style>
+          body { font-family: Arial, sans-serif; color: #1a202c; background: #fff; padding: 2rem; }
+          .header { display: flex; align-items: center; gap: 20px; }
+          .header img { height: 60px; }
+          .report-title { font-size: 2rem; font-weight: bold; color: #0369a1; }
+          .divider { border-bottom: 2px solid #0369a1; margin: 1rem 0; }
+          .grade { font-size: 1.4rem; font-weight: bold; color: #0369a1; }
+          .section { margin-bottom: 1.6rem; }
+          .category { font-size: 1.1rem; font-weight: bold; color: #0369a1; }
+          .issues { color: #b91c1c; }
+          .passes { color: #15803d; }
+          .footer { color: #64748b; font-size: 0.95rem; margin-top: 3rem; text-align: center; border-top: 1px solid #cbd5e1; padding-top: 1.2rem; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          ${logo ? `<img src="${logo}" alt="SITEGUARD Logo" />` : ''}
+          <span class="report-title">SiteGuard Scan Report</span>
+        </div>
+        <div class="divider"></div>
+        ${html}
+        <div class="footer">
+          SiteGuard.io &mdash; Military-Grade Website Auditing.<br/>
+          Scans reference best practices from <b>NIST 800-53</b>, <b>CISA</b>, and <b>OWASP Top 10</b>.
+        </div>
+      </body>
+      </html>
+    `;
+
     const browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'networkidle' });
+    await page.setContent(brandedHtml, { waitUntil: 'networkidle' });
+
     const pdfBuffer = await page.pdf({ format: 'A4' });
     await browser.close();
+
     res.set({
       'Content-Type': 'application/pdf',
-      'Content-Disposition': 'attachment; filename=report.pdf',
+      'Content-Disposition': 'attachment; filename=siteguard-report.pdf',
     });
     res.send(pdfBuffer);
   } catch (err) {
@@ -58,13 +121,291 @@ app.get('/', (req, res) => {
   res.send('SiteGuard Backend is running');
 });
 
-// All utility functions remain unchanged...
+// ----------- All Utility Functions (from your previous code) -----------
 
-// (Paste in all your previous utility functions here as before)
-// (getSecurityHeaders, checkHttps, checkSafeBrowsing, getWhoisInfo, scanForTrackersAndCookies, detectTechStack, detectOutdatedLibraries, checkAbuseIPDB, scanSensitiveFiles, checkDirectoryListing)
+// Security headers
+async function getSecurityHeaders(url) {
+  try {
+    const resp = await fetch(url, { method: 'GET', redirect: 'manual' });
+    const headers = resp.headers.raw();
+    const expected = [
+      'strict-transport-security',
+      'x-frame-options',
+      'x-content-type-options',
+      'referrer-policy',
+      'content-security-policy',
+      'permissions-policy',
+      'server',
+      'x-powered-by'
+    ];
+    let found = {};
+    expected.forEach(h => {
+      found[h] = headers[h] ? headers[h][0] : null;
+    });
+    return found;
+  } catch (err) {
+    return { error: err.message };
+  }
+}
 
+// HTTPS and SSL check
+async function checkHttps(url) {
+  try {
+    let parsed = urlModule.parse(url);
+    let baseDomain = parsed.hostname;
+    const httpUrl = `http://${baseDomain}`;
+    let redirectedToHttps = false;
+    try {
+      const resp = await fetch(httpUrl, { method: 'GET', redirect: 'manual' });
+      const location = resp.headers.get('location');
+      if (location && location.startsWith('https://')) {
+        redirectedToHttps = true;
+      }
+    } catch (e) {
+      redirectedToHttps = true;
+    }
+    return new Promise((resolve) => {
+      const options = {
+        host: baseDomain,
+        port: 443,
+        method: 'GET',
+        rejectUnauthorized: false,
+      };
+      const req = https.request(options, (res) => {
+        const cert = res.socket.getPeerCertificate();
+        resolve({
+          redirectedToHttps,
+          ssl: {
+            subject: cert.subject,
+            issuer: cert.issuer,
+            valid_from: cert.valid_from,
+            valid_to: cert.valid_to,
+            valid: res.socket.authorized,
+            protocol: res.socket.getProtocol ? res.socket.getProtocol() : undefined
+          }
+        });
+      });
+      req.on('error', (e) => {
+        resolve({ redirectedToHttps, ssl: { error: e.message } });
+      });
+      req.end();
+    });
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
+// Safe Browsing
+async function checkSafeBrowsing(url) {
+  if (!SAFE_BROWSING_KEY) {
+    return { status: 'skipped', reason: 'No API key' };
+  }
+  try {
+    const apiUrl = `https://safebrowsing.googleapis.com/v4/threatMatches:find?key=${SAFE_BROWSING_KEY}`;
+    const body = {
+      client: { clientId: "siteguard", clientVersion: "1.0" },
+      threatInfo: {
+        threatTypes: [
+          "MALWARE", "SOCIAL_ENGINEERING",
+          "UNWANTED_SOFTWARE", "POTENTIALLY_HARMFUL_APPLICATION"
+        ],
+        platformTypes: ["ANY_PLATFORM"],
+        threatEntryTypes: ["URL"],
+        threatEntries: [{ url }]
+      }
+    };
+    const resp = await fetch(apiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await resp.json();
+    if (data && data.matches && data.matches.length > 0) {
+      return { safe: false, matches: data.matches };
+    } else {
+      return { safe: true };
+    }
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
+// WHOIS / Domain age
+async function getWhoisInfo(url) {
+  try {
+    const parsed = urlModule.parse(url);
+    const domain = parsed.hostname || url;
+    const whoisData = await whois(domain);
+    const created = whoisData.creationDate || whoisData.created || whoisData['Creation Date'] || whoisData['created'];
+    const registrar = whoisData.registrar || whoisData['Registrar'] || null;
+    let domainAgeYears = null;
+    if (created) {
+      const createdDate = new Date(created);
+      const now = new Date();
+      domainAgeYears = ((now - createdDate) / (1000 * 60 * 60 * 24 * 365)).toFixed(2);
+    }
+    return { domain, registrar, created, domainAgeYears, raw: whoisData };
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
+// Tracker, analytics, cookie detection
+async function scanForTrackersAndCookies(url) {
+  try {
+    const resp = await fetch(url, { method: 'GET' });
+    const html = await resp.text();
+    const trackers = [
+      { name: "Google Analytics", pattern: /www\.google-analytics\.com|gtag\(\'config\'/ },
+      { name: "Google Tag Manager", pattern: /www\.googletagmanager\.com/ },
+      { name: "Facebook Pixel", pattern: /connect\.facebook\.net|fbq\(/ },
+      { name: "Hotjar", pattern: /static\.hotjar\.com/ },
+      { name: "Segment", pattern: /cdn\.segment\.com/ },
+      { name: "Matomo", pattern: /matomo\.js/ },
+      { name: "HubSpot", pattern: /js\.hs-scripts\.com/ },
+      { name: "Mixpanel", pattern: /cdn\.mixpanel\.com/ },
+      { name: "Amplitude", pattern: /cdn\.amplitude\.com/ },
+      { name: "Sentry", pattern: /browser\.sentry-cdn\.com/ },
+      { name: "LinkedIn Insights", pattern: /snap\.licdn\.com/ },
+      { name: "Twitter Ads", pattern: /static\.ads-twitter\.com/ }
+    ];
+    const cookieKeywords = [
+      "cookie consent", "cookie banner", "cookie popup",
+      "accept cookies", "this website uses cookies", "manage your cookie preferences"
+    ];
+    const privacyPolicyRegex = /<a [^>]*href="[^"]*privacy[^"]*"/i;
+    let foundTrackers = [];
+    for (const t of trackers) {
+      if (t.pattern.test(html)) foundTrackers.push(t.name);
+    }
+    let foundCookieBanner = cookieKeywords.some(keyword =>
+      html.toLowerCase().includes(keyword)
+    );
+    let foundPrivacyPolicy = privacyPolicyRegex.test(html);
+    return {
+      trackers: foundTrackers,
+      cookieBanner: foundCookieBanner,
+      privacyPolicy: foundPrivacyPolicy,
+      html // for tech/outdated library checks
+    };
+  } catch (err) {
+    return { error: err.message, html: '' };
+  }
+}
+
+// Tech stack / JS libraries
+function detectTechStack(headers, html) {
+  const stack = [];
+  if (headers['server']) stack.push(`Server: ${headers['server']}`);
+  if (headers['x-powered-by']) stack.push(`X-Powered-By: ${headers['x-powered-by']}`);
+  if (html) {
+    if (html.includes('wp-content/')) stack.push('WordPress');
+    if (html.match(/drupal\.js/i)) stack.push('Drupal');
+    if (html.match(/shopify\.com/i)) stack.push('Shopify');
+    if (html.match(/Magento/i)) stack.push('Magento');
+    if (html.match(/\/static\/js\//i) && html.match(/react/i)) stack.push('React');
+    if (html.match(/jquery/i)) stack.push('jQuery');
+    if (html.match(/vue(\.js)?/i)) stack.push('Vue.js');
+    if (html.match(/angular/i)) stack.push('Angular');
+    if (html.match(/bootstrap/i)) stack.push('Bootstrap');
+  }
+  return stack;
+}
+
+// Outdated JS library detection (very basic MVP)
+function detectOutdatedLibraries(html) {
+  const results = [];
+  if (html.match(/jquery-1\.[0-9.]+\.js/i)) results.push('jQuery 1.x (outdated)');
+  if (html.match(/jquery-2\.[0-9.]+\.js/i)) results.push('jQuery 2.x (outdated)');
+  if (html.match(/angular-1\.[0-9.]+\.js/i)) results.push('AngularJS 1.x (outdated)');
+  if (html.match(/bootstrap-3\.[0-9.]+\.js/i)) results.push('Bootstrap 3.x (outdated)');
+  return results;
+}
+
+// AbuseIPDB check
+async function checkAbuseIPDB(url) {
+  if (!ABUSEIPDB_KEY) {
+    return { status: 'skipped', reason: 'No API key' };
+  }
+  try {
+    const parsed = urlModule.parse(url);
+    const domain = parsed.hostname;
+    const ip = await new Promise((resolve, reject) => {
+      dns.lookup(domain, (err, address) => {
+        if (err) reject(err);
+        else resolve(address);
+      });
+    });
+    const apiUrl = `https://api.abuseipdb.com/api/v2/check?ipAddress=${ip}&maxAgeInDays=90`;
+    const resp = await fetch(apiUrl, {
+      headers: { Key: ABUSEIPDB_KEY, Accept: "application/json" }
+    });
+    const data = await resp.json();
+    return data.data || data;
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
+// Sensitive file/config exposure scan
+async function scanSensitiveFiles(url) {
+  try {
+    const parsed = urlModule.parse(url);
+    const base = `${parsed.protocol}//${parsed.hostname}`;
+    const paths = [
+      '/.git/config', '/.env', '/config.php', '/config.json', '/wp-config.php', '/admin/.env',
+      '/robots.txt', '/sitemap.xml'
+    ];
+    let found = [];
+    for (const path of paths) {
+      try {
+        const resp = await fetch(base + path, { method: 'GET' });
+        if (resp.status === 200) {
+          const text = await resp.text();
+          if ((path === '/.git/config' && text.includes('[core]')) ||
+              (path.endsWith('.env') && text.match(/DB_HOST|SECRET/i)) ||
+              (path.endsWith('wp-config.php') && text.match(/define\('DB_/)) ||
+              (path.endsWith('config.php') && text.match(/define\('DB_/))) {
+            found.push(path);
+          }
+          if (path === '/robots.txt' || path === '/sitemap.xml') {
+            found.push(path);
+          }
+        }
+      } catch (e) { }
+    }
+    return found;
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
+// Directory listing check
+async function checkDirectoryListing(url) {
+  try {
+    const parsed = urlModule.parse(url);
+    const base = `${parsed.protocol}//${parsed.hostname}`;
+    const dirs = ['/', '/admin/', '/uploads/', '/images/'];
+    let results = [];
+    for (const dir of dirs) {
+      try {
+        const resp = await fetch(base + dir, { method: 'GET' });
+        if (resp.status === 200) {
+          const text = await resp.text();
+          if (text.match(/Index of/i) || text.match(/Directory listing for/i)) {
+            results.push(dir);
+          }
+        }
+      } catch (e) { }
+    }
+    return results;
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
+// -------------------- SCAN ENDPOINT --------------------
 app.post('/scan', async (req, res) => {
-  // Use only the POSTed URL; no fallback, no default, no hardcoded test value!
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: 'Missing URL in request body' });
   let chrome;
@@ -125,7 +466,7 @@ app.post('/scan', async (req, res) => {
         sensitiveFiles,
         directoryListing
       },
-      audits: {
+            audits: {
         'is-on-https': audits['is-on-https']?.score,
         'viewport': audits['viewport']?.score,
         'robots-txt': audits['robots-txt']?.score,
