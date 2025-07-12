@@ -1,3 +1,8 @@
+require('dotenv').config({
+  path: process.env.NODE_ENV === 'test' ? '.env.test' : '.env'
+});
+console.log("🔑 Stripe key loaded:", process.env.STRIPE_SECRET_KEY?.slice(0, 10) + "...");
+console.log("🌱 NODE_ENV:", process.env.NODE_ENV);
 const express = require('express');
 const { chromium } = require('playwright');
 const cors = require('cors');
@@ -12,6 +17,7 @@ const whois = require('whois-json');
 const path = require('path');
 
 const app = express();
+app.use(express.json());       // ← add this line to parse JSON request bodies
 const PORT = process.env.PORT || 3001;
 
 // --- Load API keys from file ---
@@ -46,6 +52,9 @@ app.use(cors({
     }
   }
 }));
+// --- Stripe Webhook Route ---
+const { router: webhookRouter, isUrlPaid } = require('./webhook');
+app.use('/webhook', webhookRouter);
 
 // -------- PDF Logo Helper --------
 function getLogoBase64() {
@@ -407,6 +416,7 @@ async function checkDirectoryListing(url) {
 // -------------------- SCAN ENDPOINT --------------------
 app.post('/scan', async (req, res) => {
   const { url } = req.body;
+  console.log("📡 Incoming scan request for:", url);
   if (!url) return res.status(400).json({ error: 'Missing URL in request body' });
   let chrome;
   try {
